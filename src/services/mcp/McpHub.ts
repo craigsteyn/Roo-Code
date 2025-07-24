@@ -32,11 +32,13 @@ import {
 import { fileExistsAtPath } from "../../utils/fs"
 import { arePathsEqual } from "../../utils/path"
 import { injectVariables } from "../../utils/config"
+import { VScodeClientTransport } from "./McpVscodeServer"
+import { resourceLimits } from "worker_threads"
 
 export type McpConnection = {
 	server: McpServer
 	client: Client
-	transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport
+	transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport | VScodeClientTransport
 }
 
 // Base configuration schema for common settings
@@ -112,6 +114,9 @@ const createServerTypeSchema = () => {
 			.refine((data) => data.type === undefined || data.type === "streamable-http", {
 				message: typeErrorMessage,
 			}),
+		BaseConfigSchema.extend({
+			type: z.enum(["vscode"]).optional(),
+		}),
 	])
 }
 
@@ -193,10 +198,9 @@ export class McpHub {
 		}
 
 		// Validate type if provided
-		if (config.type && !["stdio", "sse", "streamable-http"].includes(config.type)) {
+		if (config.type && !["stdio", "sse", "streamable-http", "vscode"].includes(config.type)) {
 			throw new Error(typeErrorMessage)
 		}
-
 		// Check for type/field mismatch
 		if (config.type === "stdio" && !hasStdioFields) {
 			throw new Error(stdioFieldsErrorMessage)
@@ -209,7 +213,7 @@ export class McpHub {
 		}
 
 		// If neither command nor url is present (type alone is not enough)
-		if (!hasStdioFields && !hasUrlFields) {
+		if (!hasStdioFields && !hasUrlFields && config.type !== "vscode") {
 			throw new Error(missingFieldsErrorMessage)
 		}
 
@@ -571,15 +575,20 @@ export class McpHub {
 				},
 			)
 
-			let transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport
+			let transport:
+				| StdioClientTransport
+				| SSEClientTransport
+				| StreamableHTTPClientTransport
+				| VScodeClientTransport
 
 			// Inject variables to the config (environment, magic variables,...)
 			const configInjected = (await injectVariables(config, {
 				env: process.env,
 				workspaceFolder: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "",
 			})) as typeof config
-
-			if (configInjected.type === "stdio") {
+			if (configInjected.type === "vscode") {
+				transport = new VScodeClientTransport()
+			} else if (configInjected.type === "stdio") {
 				// On Windows, wrap commands with cmd.exe to handle non-exe executables like npx.ps1
 				// This is necessary for node version managers (fnm, nvm-windows, volta) that implement
 				// commands as PowerShell scripts rather than executables.
@@ -1482,7 +1491,7 @@ export class McpHub {
 			timeout = 60 * 1000
 		}
 
-		return await connection.client.request(
+		const result = await connection.client.request(
 			{
 				method: "tools/call",
 				params: {
@@ -1495,6 +1504,7 @@ export class McpHub {
 				timeout,
 			},
 		)
+		return result
 	}
 
 	/**
