@@ -1504,7 +1504,7 @@ export class McpHub {
 				timeout,
 			},
 		)
-		return result
+		return result as McpToolCallResponse
 	}
 
 	/**
